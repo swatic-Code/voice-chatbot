@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Chatbot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#dfe9e6;--panel:#f6faf8;--ink:#13262b;--mute:#5b7076;--line:#c2d3cf;--accent:#0f5c63;--you:#13262b;--danger:#a3321f}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:"Bricolage Grotesque",system-ui,sans-serif;display:flex;justify-content:center;padding:24px 16px}
+main{width:100%;max-width:680px;display:flex;flex-direction:column;gap:16px}
+h1{margin:0;font-size:clamp(2rem,6vw,3rem);font-weight:800;letter-spacing:-.03em;line-height:1}
+.sub{margin:6px 0 0;color:var(--mute)}
+#log{background:var(--panel);border:1px solid var(--line);border-radius:14px;min-height:320px;max-height:55vh;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.empty{color:var(--mute);margin:auto;text-align:center;max-width:32ch}
+.msg{max-width:85%;padding:10px 14px;border-radius:14px;line-height:1.45;white-space:pre-wrap}
+.msg.you{align-self:flex-end;background:var(--you);color:#fff;border-bottom-right-radius:4px}
+.msg.bot{align-self:flex-start;background:#fff;border:1px solid var(--line);border-bottom-left-radius:4px}
+.msg.err{align-self:flex-start;color:var(--danger);border:1px solid var(--danger);background:#fff}
+.msg audio{display:block;margin-top:8px;width:100%;max-width:280px;height:34px}
+.dock{display:flex;align-items:center;gap:12px}
+#mic{flex:none;width:72px;height:72px;border-radius:50%;border:0;background:var(--accent);color:#fff;cursor:pointer;display:grid;place-items:center;transition:transform .15s}
+#mic:hover{transform:scale(1.05)}
+#mic svg{width:30px;height:30px}
+#mic.on{animation:pulse 1.2s infinite;background:var(--danger)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(163,50,31,.5)}100%{box-shadow:0 0 0 22px rgba(163,50,31,0)}}
+form.text{flex:1;display:flex;gap:8px}
+input[type=text],input[type=email]{width:100%;font:inherit;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink)}
+button.btn{font:inherit;font-weight:600;padding:12px 18px;border:0;border-radius:10px;background:var(--ink);color:#fff;cursor:pointer}
+button.btn:disabled,#mic:disabled{opacity:.5;cursor:not-allowed}
+:focus-visible{outline:3px solid #f2a900;outline-offset:2px}
+details{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 16px}
+summary{cursor:pointer;font-weight:600}
+.row{display:flex;gap:8px;margin-top:12px}
+label.chk{display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--mute)}
+#status{min-height:1.2em;color:var(--mute);font-size:.9rem;margin:8px 0 0}
+@media(prefers-reduced-motion:reduce){#mic.on{animation:none}#mic{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Ask out loud.<br>Hear the answer.</h1>
+    <p class="sub">Hold a conversation with an AI assistant using your voice or keyboard.</p>
+  </header>
+
+  <section id="log" aria-live="polite" aria-label="Conversation">
+    <p class="empty" id="empty">Press the microphone and speak, or type a question below.</p>
+  </section>
+
+  <div class="dock">
+    <button id="mic" type="button" aria-label="Start speaking" title="Start speaking">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>
+    </button>
+    <form class="text" id="form">
+      <input id="text" type="text" maxlength="500" placeholder="Type your question" aria-label="Your question" autocomplete="off">
+      <button class="btn" id="send" type="submit">Send</button>
+    </form>
+  </div>
+
+  <details>
+    <summary>Get replies by email</summary>
+    <div class="row">
+      <input id="email" type="email" placeholder="you@example.com" aria-label="Email address">
+      <button class="btn" id="sub" type="button">Subscribe</button>
+    </div>
+    <label class="chk"><input type="checkbox" id="notify"> Email me every reply with the audio link</label>
+    <p id="status" role="status"></p>
+  </details>
+</main>
+
+<script src="config.js"></script>
+<script>
+const API = (window.CONFIG && window.CONFIG.API_URL) || "";
+const $ = id => document.getElementById(id);
+const log = $("log"), history = [];
+let busy = false;
+
+function add(cls, text, audioUrl) {
+  const empty = $("empty"); if (empty) empty.remove();
+  const el = document.createElement("div");
+  el.className = "msg " + cls;
+  el.textContent = text;
+  if (audioUrl) {
+    const a = document.createElement("audio");
+    a.controls = true; a.src = audioUrl; el.appendChild(a);
+    a.play().catch(() => {});   // autoplay may be blocked; controls remain available
+  }
+  log.appendChild(el); log.scrollTop = log.scrollHeight;
+  return el;
+}
+
+function setBusy(v) { busy = v; $("send").disabled = v; $("mic").disabled = v; }
+
+async function post(path, payload) {
+  const res = await fetch(API + path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Request failed (" + res.status + ").");
+  return data;
+}
+
+async function ask(message) {
+  message = message.trim();
+  if (!message || busy) return;
+  if (!API) { add("err", "API URL is not configured. Run deploy.sh to generate web/config.js."); return; }
+  add("you", message); setBusy(true);
+  const pending = add("bot", "Thinking...");
+  try {
+    const email = $("notify").checked ? $("email").value.trim() : "";
+    const data = await post("/chat", {message, history: history.slice(-6), email: email || undefined});
+    pending.remove();
+    add("bot", data.reply, data.audio_url);
+    history.push({role: "user", content: message}, {role: "assistant", content: data.reply});
+  } catch (e) { pending.remove(); add("err", e.message); }
+  setBusy(false);
+}
+
+$("form").addEventListener("submit", e => { e.preventDefault(); const t = $("text").value; $("text").value = ""; ask(t); });
+
+$("sub").addEventListener("click", async () => {
+  const email = $("email").value.trim(), s = $("status");
+  try { s.textContent = (await post("/subscribe", {email})).message; }
+  catch (e) { s.textContent = e.message; }
+});
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SR) {
+  $("mic").disabled = true; $("mic").title = "Voice input needs Chrome, Edge or Safari";
+} else {
+  const rec = new SR(); rec.lang = "en-US"; rec.interimResults = false;
+  rec.onresult = e => ask(e.results[0][0].transcript);
+  rec.onend = () => { $("mic").classList.remove("on"); $("mic").setAttribute("aria-label", "Start speaking"); };
+  rec.onerror = e => add("err", "Microphone error: " + e.error);
+  $("mic").addEventListener("click", () => {
+    if ($("mic").classList.contains("on")) { rec.stop(); return; }
+    $("mic").classList.add("on"); $("mic").setAttribute("aria-label", "Stop listening"); rec.start();
+  });
+}
+</script>
+</body>
+</html>
